@@ -13,7 +13,7 @@ import (
 	"net/url"
 
 	"github.com/gin-gonic/gin"
-	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 )
 
@@ -23,6 +23,7 @@ type mwOptions struct {
 	opNameFunc    func(r *http.Request) string
 	spanObserver  func(span opentracing.Span, r *http.Request)
 	urlTagFunc    func(u *url.URL) string
+	errorFunc     func(ctx *gin.Context) bool
 	componentName string
 }
 
@@ -32,6 +33,10 @@ type MWOption func(*mwOptions)
 // OperationNameFunc returns a MWOption that uses given function f
 // to generate operation name for each server-side span.
 func OperationNameFunc(f func(r *http.Request) string) MWOption {
+	if f == nil {
+		panic("nil OperationNameFunc")
+	}
+
 	return func(options *mwOptions) {
 		options.opNameFunc = f
 	}
@@ -40,6 +45,10 @@ func OperationNameFunc(f func(r *http.Request) string) MWOption {
 // MWComponentName returns a MWOption that sets the component name
 // for the server-side span.
 func MWComponentName(componentName string) MWOption {
+	if componentName == "" {
+		panic("empty componentName")
+	}
+
 	return func(options *mwOptions) {
 		options.componentName = componentName
 	}
@@ -48,6 +57,10 @@ func MWComponentName(componentName string) MWOption {
 // MWSpanObserver returns a MWOption that observe the span
 // for the server-side span.
 func MWSpanObserver(f func(span opentracing.Span, r *http.Request)) MWOption {
+	if f == nil {
+		panic("nil MWSpanObserver")
+	}
+
 	return func(options *mwOptions) {
 		options.spanObserver = f
 	}
@@ -57,8 +70,23 @@ func MWSpanObserver(f func(span opentracing.Span, r *http.Request)) MWOption {
 // to set the span's http.url tag. Can be used to change the default
 // http.url tag, eg to redact sensitive information.
 func MWURLTagFunc(f func(u *url.URL) string) MWOption {
+	if f == nil {
+		panic("nil MWURLTagFunc")
+	}
+
 	return func(options *mwOptions) {
 		options.urlTagFunc = f
+	}
+}
+
+// MWErrorFunc returns a MWOption that sets the span error tag
+func MWErrorFunc(f func(ctx *gin.Context) bool) MWOption {
+	if f == nil {
+		panic("nil MWErrorFunc")
+	}
+
+	return func(options *mwOptions) {
+		options.errorFunc = f
 	}
 }
 
@@ -72,6 +100,9 @@ func Middleware(tr opentracing.Tracer, options ...MWOption) gin.HandlerFunc {
 		spanObserver: func(span opentracing.Span, r *http.Request) {},
 		urlTagFunc: func(u *url.URL) string {
 			return u.String()
+		},
+		errorFunc: func(ctx *gin.Context) bool {
+			return ctx.Writer.Status() >= http.StatusInternalServerError
 		},
 	}
 	for _, opt := range options {
@@ -100,6 +131,9 @@ func Middleware(tr opentracing.Tracer, options ...MWOption) gin.HandlerFunc {
 
 		c.Next()
 
+		if opts.errorFunc(c) {
+			ext.Error.Set(sp, true)
+		}
 		ext.HTTPStatusCode.Set(sp, uint16(c.Writer.Status()))
 		sp.Finish()
 	}
