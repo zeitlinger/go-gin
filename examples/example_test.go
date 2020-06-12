@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/opentracing-contrib/go-gin/ginhttp"
 	opentracing "github.com/opentracing/opentracing-go"
 	jaeger "github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/zipkin"
+	"github.com/zeitlinger/go-gin/ginhttp"
 )
 
 func TestExample(t *testing.T) {
