@@ -9,8 +9,12 @@
 package ginhttp
 
 import (
+	"fmt"
+	"github.com/stoewer/go-strcase"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/opentracing/opentracing-go"
@@ -94,13 +98,8 @@ func MWErrorFunc(f func(ctx *gin.Context) bool) MWOption {
 //   https://github.com/opentracing-contrib/go-stdlib/
 func Middleware(tr opentracing.Tracer, options ...MWOption) gin.HandlerFunc {
 	opts := mwOptions{
-		opNameFunc: func(r *http.Request) string {
-			return "HTTP " + r.Method
-		},
+		opNameFunc:   defaultOperationName,
 		spanObserver: func(span opentracing.Span, r *http.Request) {},
-		urlTagFunc: func(u *url.URL) string {
-			return u.String()
-		},
 		errorFunc: func(ctx *gin.Context) bool {
 			return ctx.Writer.Status() >= http.StatusInternalServerError
 		},
@@ -115,7 +114,13 @@ func Middleware(tr opentracing.Tracer, options ...MWOption) gin.HandlerFunc {
 		op := opts.opNameFunc(c.Request)
 		sp := tr.StartSpan(op, ext.RPCServerOption(ctx))
 		ext.HTTPMethod.Set(sp, c.Request.Method)
-		ext.HTTPUrl.Set(sp, opts.urlTagFunc(c.Request.URL))
+		if opts.urlTagFunc != nil {
+			ext.HTTPUrl.Set(sp, opts.urlTagFunc(c.Request.URL))
+		} else {
+			ext.HTTPUrl.Set(sp, urlTag(c))
+		}
+		setIp(c.Request.RemoteAddr, sp)
+
 		opts.spanObserver(sp, c.Request)
 
 		// set component name, use "net/http" if caller does not specify
@@ -137,6 +142,43 @@ func Middleware(tr opentracing.Tracer, options ...MWOption) gin.HandlerFunc {
 		ext.HTTPStatusCode.Set(sp, uint16(c.Writer.Status()))
 		sp.Finish()
 	}
+}
+
+func setIp(addr string, sp opentracing.Span) {
+	idx := strings.LastIndex(addr, ":")
+	if idx > 0 {
+		addr = addr[:idx]
+	}
+	ip := net.ParseIP(addr)
+	if ip != nil {
+		if ip.To4() != nil {
+			ext.PeerHostIPv4.SetString(sp, ip.String())
+		} else {
+			ext.PeerHostIPv6.Set(sp, ip.String())
+		}
+	}
+}
+
+func urlTag(c *gin.Context) string {
+	var proto string
+	if c.Request.TLS == nil {
+		proto = "http"
+	} else {
+		proto = "https"
+	}
+	return fmt.Sprintf("%s://%s%s", proto, c.Request.Host, c.Request.URL.Path)
+}
+
+// DefaultOperationName is the default when tracer gets passed nil. It converts the
+// URL path to CamelCase without a leading "api", e.g. "/api/v1//entities/" -> "V1Entities"
+// or "/rest/kairosdbs/kairosdb/api/v1/datapoints/query" ->
+// "RestKairosdbsKairosdbApiV1DatapointsQuery"
+func defaultOperationName(r *http.Request) string {
+	url := strings.Split(strings.Replace(r.URL.Path, "//", "/", -1)[1:], "/") // exclude leading "/"
+	if url[0] == "api" {
+		url = url[1:]
+	}
+	return strcase.UpperCamelCase(strings.Join(url, "_"))
 }
 
 func recovery(sp opentracing.Span) {

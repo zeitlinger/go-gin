@@ -1,7 +1,9 @@
-package ginhttp
+package ginhttp_test
 
 import (
+	"fmt"
 	"github.com/opentracing/opentracing-go/ext"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,37 +13,35 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/mocktracer"
 	"github.com/stretchr/testify/assert"
+	"github.com/zeitlinger/go-gin/ginhttp"
 )
 
+const defaultComponentName = "net/http"
+
+type testCase struct {
+	name                  string
+	handler               gin.HandlerFunc
+	options               []ginhttp.MWOption
+	expectedOperationName string
+	expectedSpanTags      []map[string]interface{}
+}
+
 func TestTags(t *testing.T) {
-	tests := []struct {
-		name                  string
-		handler               gin.HandlerFunc
-		options               []MWOption
-		expectedOperationName string
-		expectedSpanTags      []map[string]interface{}
-	}{
+	tests := []testCase{
 		{
 			name: "OK",
-			handler: func(c *gin.Context) {
-				c.String(http.StatusOK, "OK")
-			},
 			expectedSpanTags: []map[string]interface{}{
 				{
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusOK),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 				},
 			},
 		},
 		{
 			name: "span observer option",
-			handler: func(c *gin.Context) {
-				c.String(http.StatusOK, "OK")
-			},
-			options: []MWOption{MWSpanObserver(func(sp opentracing.Span, r *http.Request) {
+			options: []ginhttp.MWOption{ginhttp.MWSpanObserver(func(sp opentracing.Span, r *http.Request) {
 				sp.SetTag("http.uri", r.URL.EscapedPath())
 			})},
 			expectedSpanTags: []map[string]interface{}{
@@ -49,34 +49,26 @@ func TestTags(t *testing.T) {
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusOK),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					"http.uri":                 "/hello",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 				},
 			},
 		},
 		{
-			name: "ComponentName option",
-			handler: func(c *gin.Context) {
-				c.String(http.StatusOK, "OK")
-			},
-			options: []MWOption{MWComponentName("comp")},
+			name:    "ComponentName option",
+			options: []ginhttp.MWOption{ginhttp.MWComponentName("comp")},
 			expectedSpanTags: []map[string]interface{}{
 				{
 					string(ext.Component):      "comp",
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusOK),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 				},
 			},
 		},
 		{
 			name: "URLTag option",
-			handler: func(c *gin.Context) {
-				c.String(http.StatusOK, "OK")
-			},
-			options: []MWOption{MWURLTagFunc(func(u *url.URL) string {
+			options: []ginhttp.MWOption{ginhttp.MWURLTagFunc(func(u *url.URL) string {
 				// Log path only (no query parameters etc)
 				return u.Path
 			})},
@@ -92,10 +84,7 @@ func TestTags(t *testing.T) {
 		},
 		{
 			name: "OperationName option",
-			handler: func(c *gin.Context) {
-				c.String(http.StatusOK, "OK")
-			},
-			options: []MWOption{OperationNameFunc(func(r *http.Request) string {
+			options: []ginhttp.MWOption{ginhttp.OperationNameFunc(func(r *http.Request) string {
 				return "HTTP " + r.Method + ": /root"
 			})},
 			expectedOperationName: "HTTP GET: /root",
@@ -104,7 +93,6 @@ func TestTags(t *testing.T) {
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusOK),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 				},
 			},
@@ -119,7 +107,6 @@ func TestTags(t *testing.T) {
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusInternalServerError),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 					string(ext.Error):          true,
 				},
@@ -130,7 +117,7 @@ func TestTags(t *testing.T) {
 			handler: func(c *gin.Context) {
 				c.String(http.StatusNotFound, "OK")
 			},
-			options: []MWOption{MWErrorFunc(func(ctx *gin.Context) bool {
+			options: []ginhttp.MWOption{ginhttp.MWErrorFunc(func(ctx *gin.Context) bool {
 				return ctx.Writer.Status() >= http.StatusNotFound
 			})},
 			expectedSpanTags: []map[string]interface{}{
@@ -138,7 +125,6 @@ func TestTags(t *testing.T) {
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusNotFound),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 					string(ext.Error):          true,
 				},
@@ -154,7 +140,6 @@ func TestTags(t *testing.T) {
 					string(ext.Component):      defaultComponentName,
 					string(ext.HTTPMethod):     "GET",
 					string(ext.HTTPStatusCode): uint16(http.StatusInternalServerError),
-					string(ext.HTTPUrl):        "/hello?token=secret",
 					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
 					string(ext.Error):          true,
 				},
@@ -163,32 +148,50 @@ func TestTags(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		testCase := tt
-		t.Run(testCase.name, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			tracer := &mocktracer.MockTracer{}
-			r := gin.New()
-			r.Use(gin.Recovery(), Middleware(tracer, testCase.options...))
-			r.GET("/hello", testCase.handler)
-			srv := httptest.NewServer(r)
+			if tt.handler == nil {
+				tt.handler = func(c *gin.Context) {
+					c.String(http.StatusOK, "OK")
+				}
+			}
+			srv := httptest.NewServer(engine(tracer, tt.handler, tt.options))
 			defer srv.Close()
 
-			_, err := http.Get(srv.URL + "/hello?token=secret")
-			if err != nil {
-				t.Fatalf("server returned error: %v", err)
-			}
+			setDefaults(&tt, srv.Listener)
+
+			request, err := http.NewRequest("GET", srv.URL+"/hello?token=secret", nil)
+			assert.NoError(t, err)
+			_, err = http.DefaultClient.Do(request)
+			assert.NoError(t, err)
 
 			var tags []map[string]interface{}
 
-			op := testCase.expectedOperationName
-			if op == "" {
-				op = "HTTP GET"
-			}
-
 			for _, span := range tracer.FinishedSpans() {
 				tags = append(tags, span.Tags())
-				assert.Equal(t, op, span.OperationName)
+				assert.Equal(t, tt.expectedOperationName, span.OperationName)
 			}
-			assert.Equal(t, testCase.expectedSpanTags, tags)
+			assert.Equal(t, tt.expectedSpanTags, tags)
 		})
 	}
+}
+
+func setDefaults(tt *testCase, listener net.Listener) {
+	if tt.expectedOperationName == "" {
+		tt.expectedOperationName = "Hello"
+	}
+
+	for _, tags := range tt.expectedSpanTags {
+		tags[string(ext.PeerHostIPv4)] = "127.0.0.1"
+		if _, ok := tags[string(ext.HTTPUrl)]; !ok {
+			tags[string(ext.HTTPUrl)] = fmt.Sprintf("http://%s/hello", listener.Addr())
+		}
+	}
+}
+
+func engine(tracer *mocktracer.MockTracer, h gin.HandlerFunc, options []ginhttp.MWOption) *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery(), ginhttp.Middleware(tracer, options...))
+	r.GET("/hello", h)
+	return r
 }
