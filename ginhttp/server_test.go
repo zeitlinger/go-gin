@@ -1,14 +1,16 @@
 package ginhttp
 
 import (
+	"github.com/opentracing/opentracing-go/ext"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/mocktracer"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestOperationNameOption(t *testing.T) {
@@ -150,6 +152,70 @@ func TestURLTagOption(t *testing.T) {
 			if got, want := tag, testCase.tag; got != want {
 				t.Fatalf("got %s tag name, expected %s", got, want)
 			}
+		})
+	}
+}
+
+func TestTags(t *testing.T) {
+
+	tests := []struct {
+		name             string
+		handler          gin.HandlerFunc
+		expectedSpanTags []map[string]interface{}
+	}{
+		{
+			name: "OK",
+			handler: func(c *gin.Context) {
+				c.String(http.StatusOK, "OK")
+			},
+			expectedSpanTags: []map[string]interface{}{
+				{
+					string(ext.Component):      defaultComponentName,
+					string(ext.HTTPMethod):     "GET",
+					string(ext.HTTPStatusCode): uint16(http.StatusOK),
+					string(ext.HTTPUrl):        "/hello",
+					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
+				},
+			},
+		},
+		{
+			name: "Panic",
+			handler: func(c *gin.Context) {
+				panic("panic test")
+			},
+			expectedSpanTags: []map[string]interface{}{
+				{
+					string(ext.Component):      defaultComponentName,
+					string(ext.HTTPMethod):     "GET",
+					string(ext.HTTPStatusCode): uint16(http.StatusInternalServerError),
+					string(ext.HTTPUrl):        "/hello",
+					string(ext.SpanKind):       ext.SpanKindRPCServerEnum,
+					string(ext.Error):          true,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		testCase := tt
+		t.Run(testCase.name, func(t *testing.T) {
+			tracer := &mocktracer.MockTracer{}
+			r := gin.New()
+			r.Use(gin.Recovery(), Middleware(tracer))
+			r.GET("/hello", testCase.handler)
+			srv := httptest.NewServer(r)
+			defer srv.Close()
+
+			_, err := http.Get(srv.URL + "/hello")
+			if err != nil {
+				t.Fatalf("server returned error: %v", err)
+			}
+
+			var tags []map[string]interface{}
+			for _, span := range tracer.FinishedSpans() {
+				tags = append(tags, span.Tags())
+			}
+			assert.Equal(t, testCase.expectedSpanTags, tags)
 		})
 	}
 }
